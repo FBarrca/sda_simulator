@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Callable
@@ -17,6 +19,10 @@ from .types import (
 type StateFactory[StateT] = Callable[[int], StateT]
 
 
+def _default_max_workers() -> int:
+    return max(1, os.cpu_count() or 1)
+
+
 @dataclass
 class SimulatorConfig:
     """Configuration for one call to `Simulator.run`.
@@ -27,6 +33,9 @@ class SimulatorConfig:
         copy_initial_state: Deep-copy the initial state before each replication.
             Keep this enabled for mutable states. Disable it only when states
             are immutable or when `initial_state` already creates a fresh state.
+        parallel: Run independent replications in separate worker threads.
+        max_workers: Maximum number of worker threads when `parallel` is enabled.
+            Defaults to all detected CPU cores.
         early_stop_no_improvement_rounds: Reserved for higher-level evaluation
             loops that stop after repeated non-improving rounds.
     """
@@ -34,6 +43,8 @@ class SimulatorConfig:
     horizon: int
     replications: int
     copy_initial_state: bool = True
+    parallel: bool = True
+    max_workers: int | None = None
     early_stop_no_improvement_rounds: int | None = None
 
 
@@ -68,7 +79,6 @@ class Simulator[StateT, DecisionT, ExogenousT]:
         policy: Policy[StateT, DecisionT],
         config: SimulatorConfig,
     ) -> list[Trajectory[StateT, DecisionT, ExogenousT]]:
-        trajectories: list[Trajectory[StateT, DecisionT, ExogenousT]] = []
         """
         Run the simulator for one policy.
 
@@ -80,43 +90,78 @@ class Simulator[StateT, DecisionT, ExogenousT]:
         Returns:
             A list of sample paths, each containing a trajectory of the system.
         """
-        for r in range(config.replications):
-            self.sampler.reset(r)
-            state = initial_state(r) if callable(initial_state) else initial_state
-            if config.copy_initial_state:
-                state = deepcopy(state)
+        if config.max_workers is not None and config.max_workers <= 0:
+            raise ValueError("max_workers must be greater than 0")
 
-            steps: list[StepRecord[StateT, DecisionT, ExogenousT]] = []
-            total_reward = 0.0
-
-            for t in range(config.horizon):
-                decision = policy.decide(state)
-                exogenous = self.sampler.sample(state, t)
-                next_state = self.transition(state, decision, exogenous)
-                reward = self.reward_fn(state, next_state)
-                total_reward += reward
-
-                steps.append(
-                    StepRecord(
-                        replication=r,
-                        t=t,
-                        state=state,
-                        decision=decision,
-                        exogenous=exogenous,
-                        next_state=next_state,
-                        reward=reward,
+        if config.parallel and config.replications > 1:
+            max_workers = config.max_workers or _default_max_workers()
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                return list(
+                    executor.map(
+                        lambda replication: self._run_replication(
+                            replication,
+                            initial_state=initial_state,
+                            policy=policy,
+                            config=config,
+                            isolate_objects=True,
+                        ),
+                        range(config.replications),
                     )
                 )
-                state = next_state
 
-            trajectories.append(
-                Trajectory(
-                    replication=r,
-                    policy_name=getattr(policy, "name", policy.__class__.__name__),
-                    steps=steps,
-                    total_reward=total_reward,
-                    final_state=state,
+        return [
+            self._run_replication(
+                r,
+                initial_state=initial_state,
+                policy=policy,
+                config=config,
+            )
+            for r in range(config.replications)
+        ]
+
+    def _run_replication(
+        self,
+        replication: int,
+        *,
+        initial_state: StateT | StateFactory[StateT],
+        policy: Policy[StateT, DecisionT],
+        config: SimulatorConfig,
+        isolate_objects: bool = False,
+    ) -> Trajectory[StateT, DecisionT, ExogenousT]:
+        sampler = deepcopy(self.sampler) if isolate_objects else self.sampler
+        policy = deepcopy(policy) if isolate_objects else policy
+        sampler.reset(replication)
+        state = initial_state(replication) if callable(initial_state) else initial_state
+        if config.copy_initial_state:
+            state = deepcopy(state)
+
+        steps: list[StepRecord[StateT, DecisionT, ExogenousT]] = []
+        total_reward = 0.0
+
+        for t in range(config.horizon):
+            decision = policy.decide(state)
+            exogenous = sampler.sample(state, t)
+            next_state = self.transition(state, decision, exogenous)
+            reward = self.reward_fn(state, next_state)
+            total_reward += reward
+
+            steps.append(
+                StepRecord(
+                    replication=replication,
+                    t=t,
+                    state=state,
+                    decision=decision,
+                    exogenous=exogenous,
+                    next_state=next_state,
+                    reward=reward,
                 )
             )
+            state = next_state
 
-        return trajectories
+        return Trajectory(
+            replication=replication,
+            policy_name=getattr(policy, "name", policy.__class__.__name__),
+            steps=steps,
+            total_reward=total_reward,
+            final_state=state,
+        )
