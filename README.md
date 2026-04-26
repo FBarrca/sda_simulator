@@ -66,6 +66,11 @@ or:
 pip install -e .
 ```
 
+## Getting started
+
+Read the [getting started guide](docs/getting-started.md) to define a transition
+function, policy, sampler, and simulator run.
+
 ## Run the logistics example
 
 ```bash
