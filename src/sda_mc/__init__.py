@@ -2,18 +2,44 @@ from .core.types import ExogenousSampler, Policy, RewardFn, StepRecord, Trajecto
 from .core.evaluation import Summary, summarize_rewards
 from .core.samplers import HistoricalBootstrapSampler, ScenarioSampler
 from .core.simulator import Simulator, SimulatorConfig
+from .metrics import (
+    ExperimentMetadata,
+    MetricReport,
+    MetricSpec,
+    PolicyProgress,
+    StatisticalSummary,
+    TableColumn,
+    TailRisk,
+    cvar,
+    evaluate_metrics,
+    metadata_from_config,
+    render_metric_table,
+    summarize,
+)
 
 __all__ = [
     "ExogenousSampler",
+    "ExperimentMetadata",
     "HistoricalBootstrapSampler",
+    "MetricReport",
+    "MetricSpec",
+    "PolicyProgress",
     "Simulator",
     "Policy",
     "RewardFn",
     "ScenarioSampler",
     "SimulatorConfig",
+    "StatisticalSummary",
     "StepRecord",
     "Summary",
+    "TableColumn",
+    "TailRisk",
     "Trajectory",
     "Transition",
+    "cvar",
+    "evaluate_metrics",
+    "metadata_from_config",
+    "render_metric_table",
+    "summarize",
     "summarize_rewards",
 ]
