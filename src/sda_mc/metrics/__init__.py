@@ -21,11 +21,12 @@ from .runtime import (
     wandb_verbose,
     wandb_enabled,
 )
-from .statistical import StatisticalSummary, summarize
+from .statistical import StatisticalSummary, format_ci, summarize
 
 __all__ = [
     "ExperimentMetadata",
     "MetricComparison",
+    "format_ci",
     "MetricRegistry",
     "MetricReport",
     "MetricSet",

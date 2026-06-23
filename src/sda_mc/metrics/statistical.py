@@ -20,6 +20,17 @@ class StatisticalSummary:
     max: float
     sum: float
 
+    @property
+    def ci_half_width(self) -> float:
+        """Half-width of the 95% confidence interval (mean ± ci_half_width)."""
+        return (self.ci95_high - self.ci95_low) / 2.0
+
+
+def format_ci(summary: StatisticalSummary, decimals: int = 2) -> str:
+    """Format a summary as 'mean ± half_width  (n=N)' for display."""
+    fmt = f".{decimals}f"
+    return f"{summary.mean:{fmt}} ± {summary.ci_half_width:{fmt}}  (n={summary.n})"
+
 
 def summarize(values: Sequence[float]) -> StatisticalSummary:
     """Summarize scalar values with a normal-approximation 95% interval."""
