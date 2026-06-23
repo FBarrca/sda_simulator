@@ -1,4 +1,12 @@
-from .core.types import ExogenousSampler, Policy, RewardFn, StepRecord, Trajectory, Transition
+from .core.types import (
+    ExogenousSampler,
+    Policy,
+    PostDecisionFn,
+    RewardFn,
+    StepRecord,
+    Trajectory,
+    Transition,
+)
 from .core.evaluation import Summary, summarize_rewards
 from .core.samplers import HistoricalBootstrapSampler, ScenarioSampler
 from .core.simulator import Simulator, SimulatorConfig
@@ -26,6 +34,7 @@ __all__ = [
     "PolicyProgress",
     "Simulator",
     "Policy",
+    "PostDecisionFn",
     "RewardFn",
     "ScenarioSampler",
     "SimulatorConfig",

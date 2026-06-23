@@ -27,14 +27,14 @@ from transition import logistics_transition, reward_completed_minus_late, reward
 
 def service_value(trajectory) -> float:
     return sum(
-        reward_components(step.state, step.next_state).service_value
+        reward_components(step.state, step.decision, step.exogenous).service_value
         for step in trajectory.steps
     )
 
 
 def late_cost(trajectory) -> float:
     return sum(
-        reward_components(step.state, step.next_state).late_penalty
+        reward_components(step.state, step.decision, step.exogenous).late_penalty
         for step in trajectory.steps
     )
 

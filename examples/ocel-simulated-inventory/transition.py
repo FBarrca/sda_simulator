@@ -57,14 +57,18 @@ def inventory_transition_with_info(
     )
 
 
-def reward_stockout_overstock_service(previous: State, current: State) -> float:
-    backlog_quantity = sum(order.quantity_open for order in current.backlog.values())
-    overstock_quantity = sum(max(0.0, quantity) for quantity in current.inventory.values())
-    completed_quantity = sum(
-        quantity - previous.completed_orders.get(order_id, 0.0)
-        for order_id, quantity in current.completed_orders.items()
-    )
-    return completed_quantity - 3.0 * backlog_quantity - 0.02 * overstock_quantity
+def reward_stockout_overstock_service(
+    state: State, decision: Decision, exogenous: ExogenousInfo
+) -> float:
+    """Contribution C(S_t, x_t, W_{t+1}): service minus backlog and overstock.
+
+    Derived from the decision and realized exogenous information via the same
+    transition the simulator uses; the allocated and backlog quantities come
+    straight from its TransitionInfo instead of diffing two states.
+    """
+    next_state, info = inventory_transition_with_info(state, decision, exogenous)
+    overstock_quantity = sum(max(0.0, quantity) for quantity in next_state.inventory.values())
+    return info.allocated_quantity - 3.0 * info.backlog_quantity - 0.02 * overstock_quantity
 
 
 def _apply_reorders(state: State, decision: Decision) -> float:

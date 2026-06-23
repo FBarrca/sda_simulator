@@ -12,15 +12,17 @@ class Policy[StateT, DecisionT](Protocol):
     def decide(self, state: StateT) -> DecisionT: ...
 
 
-class RewardFn[StateT](Protocol):
-    """Immediate reward or cost function for a simulator step.
+class RewardFn[StateT, DecisionT, ExogenousT](Protocol):
+    """Immediate contribution function, C(S_t, x_t, W_{t+1}).
 
-    The reward function is also called the contribution function, C(s_t, x_t).
-    It returns the immediate reward or cost, using the model's sign convention,
-    at time t.
+    Returns the immediate reward or cost of taking decision x_t in state S_t,
+    optionally using the exogenous information W_{t+1} revealed afterward, with
+    the model's sign convention. The contribution depends on the decision, not
+    on the next state: anything a model needs is derivable from these inputs,
+    since S_{t+1} is itself a function of (S_t, x_t, W_{t+1}).
     """
 
-    def __call__(self, state: StateT, next_state: StateT) -> float: ...
+    def __call__(self, state: StateT, decision: DecisionT, exogenous: ExogenousT) -> float: ...
 
 
 class ExogenousSampler[StateT, ExogenousT](Protocol):
@@ -35,6 +37,19 @@ class Transition[StateT, DecisionT, ExogenousT](Protocol):
     """Business physics: S_{t+1} = S_M(S_t, x_t, W_{t+1})."""
 
     def __call__(self, state: StateT, decision: DecisionT, exogenous: ExogenousT) -> StateT: ...
+
+
+class PostDecisionFn[StateT, DecisionT](Protocol):
+    """Maps a state and decision to the post-decision state, S^x_t.
+
+    The post-decision state captures the deterministic effect of the decision
+    *before* the exogenous information W_{t+1} is revealed:
+    S^x_t = S^{M,x}(S_t, x_t). It is the natural argument for value-function
+    approximations V(S^x_t) in Powell's VFA policy class, because conditioning
+    on it removes the expectation from inside the max.
+    """
+
+    def __call__(self, state: StateT, decision: DecisionT) -> StateT: ...
 
 
 class Objective[StateT](Protocol):
@@ -52,6 +67,7 @@ class StepRecord[StateT, DecisionT, ExogenousT]:
     exogenous: ExogenousT
     next_state: StateT
     reward: float = 0.0
+    post_decision_state: StateT | None = None
     info: dict[str, Any] = field(default_factory=dict)
 
 

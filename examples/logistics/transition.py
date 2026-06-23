@@ -71,8 +71,17 @@ class RewardComponents:
         return self.service_value - self.late_penalty
 
 
-def reward_components(previous: State, current: State) -> RewardComponents:
-    newly_completed = current.completed_orders[len(previous.completed_orders) :]
+def reward_components(
+    state: State, decision: Decision, exogenous: ExogenousInfo
+) -> RewardComponents:
+    """Contribution C(S_t, x_t, W_{t+1}) split into its service and lateness parts.
+
+    The contribution is a function of the decision and the realized exogenous
+    information, so it derives the resulting state with the same transition the
+    simulator uses rather than diffing two externally-tracked states.
+    """
+    current = logistics_transition(state, decision, exogenous)
+    newly_completed = current.completed_orders[len(state.completed_orders) :]
     service_value = sum(
         order.priority * 12 + min(order.quantity, 32) * 0.5 for order in newly_completed
     )
@@ -84,5 +93,7 @@ def reward_components(previous: State, current: State) -> RewardComponents:
     return RewardComponents(float(service_value), float(late_penalty))
 
 
-def reward_completed_minus_late(previous: State, current: State) -> float:
-    return reward_components(previous, current).net_reward
+def reward_completed_minus_late(
+    state: State, decision: Decision, exogenous: ExogenousInfo
+) -> float:
+    return reward_components(state, decision, exogenous).net_reward

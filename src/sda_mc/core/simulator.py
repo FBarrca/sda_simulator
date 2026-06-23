@@ -8,6 +8,7 @@ from typing import Callable
 
 from .types import (
     ExogenousSampler,
+    PostDecisionFn,
     RewardFn,
     Policy,
     StepRecord,
@@ -57,8 +58,14 @@ class Simulator[StateT, DecisionT, ExogenousT]:
         sampler: Exogenous information sampler. It materializes the information
             W_{t+1} revealed after a decision is made, which is then used to
             evolve the state with the transition function.
-        reward_fn: Immediate reward or cost function for one simulator step.
-            Also called the contribution function, C(s_t, x_t).
+        reward_fn: Immediate contribution function for one simulator step,
+            C(S_t, x_t, W_{t+1}), evaluated from the state, the decision, and
+            the exogenous information.
+        post_decision: Optional map from a state and decision to the
+            post-decision state S^x_t = S^{M,x}(S_t, x_t). When supplied, each
+            recorded step carries the post-decision state so VFA policies can
+            learn or query V(S^x_t). It does not change how next_state is
+            computed; the full transition still produces S_{t+1}.
     """
 
     def __init__(
@@ -66,11 +73,13 @@ class Simulator[StateT, DecisionT, ExogenousT]:
         *,
         transition: Transition[StateT, DecisionT, ExogenousT],
         sampler: ExogenousSampler[StateT, ExogenousT],
-        reward_fn: RewardFn[StateT] | None = None,
+        reward_fn: RewardFn[StateT, DecisionT, ExogenousT] | None = None,
+        post_decision: PostDecisionFn[StateT, DecisionT] | None = None,
     ) -> None:
         self.transition = transition
         self.sampler = sampler
-        self.reward_fn = reward_fn or (lambda _previous, _next: 0.0)
+        self.reward_fn = reward_fn or (lambda _state, _decision, _exogenous: 0.0)
+        self.post_decision = post_decision
 
     def run(
         self,
@@ -140,9 +149,12 @@ class Simulator[StateT, DecisionT, ExogenousT]:
 
         for t in range(config.horizon):
             decision = policy.decide(state)
+            post_decision_state = (
+                self.post_decision(state, decision) if self.post_decision else None
+            )
             exogenous = sampler.sample(state, t)
             next_state = self.transition(state, decision, exogenous)
-            reward = self.reward_fn(state, next_state)
+            reward = self.reward_fn(state, decision, exogenous)
             total_reward += reward
 
             steps.append(
@@ -154,6 +166,7 @@ class Simulator[StateT, DecisionT, ExogenousT]:
                     exogenous=exogenous,
                     next_state=next_state,
                     reward=reward,
+                    post_decision_state=post_decision_state,
                 )
             )
             state = next_state
