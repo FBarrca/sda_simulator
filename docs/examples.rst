@@ -58,6 +58,17 @@ The lanes form an asymmetric 3×12 distance matrix (road distances, km). Each cu
 
 This asymmetry is crucial: it forces the policy to trade off "nearest warehouse" against "warehouse that actually has the stock and an available truck."
 
+.. image:: ../examples/logistics/logistics_network_map.png
+   :alt: Map of the Spanish distribution network: 3 warehouses and 12 customers with warehouse-to-customer lanes
+   :width: 100%
+
+Diamonds mark the three warehouses and circles mark the twelve customers. Each
+customer's heavy colored lane points to its nearest warehouse, while the faint
+lanes show the more distant — but still feasible — alternatives a policy may
+fall back on when the nearest warehouse is out of stock or has no available
+truck. (Regenerate it with ``python visualize_network.py``; see
+`Visualizing the Network`_.)
+
 The State Space
 ---------------
 
@@ -584,6 +595,10 @@ This creates ``logistics_network_map.png`` showing:
 - Heavy colored lines for each customer's nearest warehouse
 - Faint lines for alternative warehouse options
 - Real OpenStreetMap basemap
+
+.. image:: ../examples/logistics/logistics_network_map.png
+   :alt: Spanish distribution network rendered over an OpenStreetMap basemap
+   :width: 100%
 
 The visualization helps you understand the geographic constraints that drive the dispatch decision-making.
 
