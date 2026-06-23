@@ -52,6 +52,48 @@ class PostDecisionFn[StateT, DecisionT](Protocol):
     def __call__(self, state: StateT, decision: DecisionT) -> StateT: ...
 
 
+@dataclass(frozen=True)
+class LookaheadModel[StateT, DecisionT, ExogenousT]:
+    """The base model handed to direct-lookahead (DLA) policies for planning.
+
+    A DLA policy — rolling-horizon, MPC, stochastic-tree lookahead — chooses
+    x_t by rolling the system forward: drawing future information W from the
+    sampler, evolving the state with the transition, and scoring paths with the
+    contribution function. Powell calls this the lookahead model; it is usually
+    a (possibly simplified) copy of the base model.
+
+    The simulator constructs one of these and injects it into any policy that
+    exposes `set_lookahead_model`, so a DLA policy never has to re-import or
+    reconstruct the system's physics. The `sampler` is an *independent* copy of
+    the simulator's own sampler: a policy can draw planning scenarios from it
+    without perturbing the realized sample path. The policy owns it and should
+    reset/seed it as needed before drawing scenarios.
+    """
+
+    transition: Transition[StateT, DecisionT, ExogenousT]
+    sampler: ExogenousSampler[StateT, ExogenousT]
+    reward_fn: RewardFn[StateT, DecisionT, ExogenousT]
+    post_decision: PostDecisionFn[StateT, DecisionT] | None = None
+
+
+class LookaheadPolicy[StateT, DecisionT, ExogenousT](Protocol):
+    """A policy that plans against a lookahead model handed to it.
+
+    The simulator detects `set_lookahead_model` and calls it once per
+    replication, before stepping, so the policy can roll the model forward
+    inside `decide`. Policies that only need the current state implement the
+    plain `Policy` protocol and are left untouched.
+    """
+
+    name: str
+
+    def decide(self, state: StateT) -> DecisionT: ...
+
+    def set_lookahead_model(
+        self, model: LookaheadModel[StateT, DecisionT, ExogenousT]
+    ) -> None: ...
+
+
 class Objective[StateT](Protocol):
     """Returns a scalar contribution or final score from a state."""
 

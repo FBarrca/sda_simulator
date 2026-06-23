@@ -8,6 +8,7 @@ from typing import Callable
 
 from .types import (
     ExogenousSampler,
+    LookaheadModel,
     PostDecisionFn,
     RewardFn,
     Policy,
@@ -128,6 +129,26 @@ class Simulator[StateT, DecisionT, ExogenousT]:
             for r in range(config.replications)
         ]
 
+    def _bind_lookahead_model(self, policy: Policy[StateT, DecisionT]) -> None:
+        """Hand a direct-lookahead policy its own copy of the base model.
+
+        Policies that expose `set_lookahead_model` receive a `LookaheadModel`
+        carrying the transition, contribution, and an *independent* copy of the
+        sampler, so planning rollouts cannot disturb the realized sample path.
+        Plain `Policy` implementations are left untouched.
+        """
+        bind = getattr(policy, "set_lookahead_model", None)
+        if bind is None:
+            return
+        bind(
+            LookaheadModel(
+                transition=self.transition,
+                sampler=deepcopy(self.sampler),
+                reward_fn=self.reward_fn,
+                post_decision=self.post_decision,
+            )
+        )
+
     def _run_replication(
         self,
         replication: int,
@@ -139,6 +160,7 @@ class Simulator[StateT, DecisionT, ExogenousT]:
     ) -> Trajectory[StateT, DecisionT, ExogenousT]:
         sampler = deepcopy(self.sampler) if isolate_objects else self.sampler
         policy = deepcopy(policy) if isolate_objects else policy
+        self._bind_lookahead_model(policy)
         sampler.reset(replication)
         state = initial_state(replication) if callable(initial_state) else initial_state
         if config.copy_initial_state:

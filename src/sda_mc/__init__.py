@@ -1,5 +1,7 @@
 from .core.types import (
     ExogenousSampler,
+    LookaheadModel,
+    LookaheadPolicy,
     Policy,
     PostDecisionFn,
     RewardFn,
@@ -29,6 +31,8 @@ __all__ = [
     "ExogenousSampler",
     "ExperimentMetadata",
     "HistoricalBootstrapSampler",
+    "LookaheadModel",
+    "LookaheadPolicy",
     "MetricReport",
     "MetricSpec",
     "PolicyProgress",

@@ -5,8 +5,9 @@ from random import Random
 import numpy as np
 from scipy.optimize import Bounds, LinearConstraint, milp
 
-from domain import Assignment, Decision, State
+from domain import Assignment, Decision, ExogenousInfo, State
 from network import lane_distance_km, route_days
+from sda_mc import LookaheadModel
 
 
 def assignment_score(state: State, assignment: Assignment) -> float:
@@ -107,6 +108,81 @@ class PriorityPolicy:
             reserved_inventory[assignment.warehouse][order.sku] -= order.quantity
 
         return Decision(chosen)
+
+
+class LookaheadRolloutPolicy:
+    """Direct-lookahead (DLA) policy: a rolling-horizon rollout.
+
+    Unlike `MilpPolicy` (a myopic cost-function approximation that only scores
+    *current* feasible assignments), this policy actually plans forward. For a
+    few candidate first-stage decisions it rolls the system out over sampled
+    future scenarios using the lookahead model the simulator injects — the real
+    transition, contribution, and an independent sampler — and picks the
+    candidate with the best estimated reward-to-go. With no model injected it
+    degenerates to its base continuation policy.
+    """
+
+    name = "lookahead_rollout"
+
+    def __init__(self, *, scenarios: int = 2, horizon: int = 3, seed: int = 0) -> None:
+        self.scenarios = scenarios
+        self.horizon = horizon
+        self.seed = seed
+        self.base = PriorityPolicy()
+        self.model: LookaheadModel[State, Decision, ExogenousInfo] | None = None
+
+    def set_lookahead_model(
+        self, model: LookaheadModel[State, Decision, ExogenousInfo]
+    ) -> None:
+        self.model = model
+
+    def decide(self, state: State) -> Decision:
+        if self.model is None:
+            return self.base.decide(state)
+
+        candidates = self._candidate_decisions(state)
+        if len(candidates) == 1:
+            return candidates[0]
+
+        best_decision = candidates[0]
+        best_value = float("-inf")
+        for candidate in candidates:
+            value = self._rollout_value(state, candidate)
+            if value > best_value:
+                best_value = value
+                best_decision = candidate
+        return best_decision
+
+    def _candidate_decisions(self, state: State) -> list[Decision]:
+        candidates = [
+            PriorityPolicy().decide(state),
+            GreedyPolicy().decide(state),
+            Decision([]),  # defer: commit nothing this epoch
+        ]
+        seen: set[tuple] = set()
+        unique: list[Decision] = []
+        for candidate in candidates:
+            key = tuple(sorted((a.order_id, a.vehicle_id) for a in candidate.order_assignments))
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(candidate)
+        return unique
+
+    def _rollout_value(self, state: State, first_decision: Decision) -> float:
+        model = self.model
+        assert model is not None
+        total = 0.0
+        for scenario in range(self.scenarios):
+            model.sampler.reset(self.seed + scenario)
+            sim_state = state
+            decision = first_decision
+            for step in range(self.horizon):
+                exogenous = model.sampler.sample(sim_state, step)
+                total += model.reward_fn(sim_state, decision, exogenous)
+                sim_state = model.transition(sim_state, decision, exogenous)
+                decision = self.base.decide(sim_state)
+        return total / self.scenarios
 
 
 class MilpPolicy:

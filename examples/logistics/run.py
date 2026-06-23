@@ -21,7 +21,13 @@ from sda_mc import (  # noqa: E402
 from sda_mc.metrics.runtime import load_env_file, log_wandb_report, wandb_enabled  # noqa: E402
 
 from data import initial_state, synthetic_history  # noqa: E402
-from policies import GreedyPolicy, MilpPolicy, PriorityPolicy, RandomPolicy  # noqa: E402
+from policies import (  # noqa: E402
+    GreedyPolicy,
+    LookaheadRolloutPolicy,
+    MilpPolicy,
+    PriorityPolicy,
+    RandomPolicy,
+)
 from transition import logistics_transition, reward_completed_minus_late, reward_components  # noqa: E402
 
 
@@ -68,7 +74,13 @@ def main() -> None:
     load_env_file(ROOT / ".env")
     history = synthetic_history(days=365)
     config = SimulatorConfig(horizon=30, replications=100)
-    policies = [RandomPolicy(seed=1), GreedyPolicy(), PriorityPolicy(), MilpPolicy()]
+    policies = [
+        RandomPolicy(seed=1),
+        GreedyPolicy(),
+        PriorityPolicy(),
+        MilpPolicy(),
+        LookaheadRolloutPolicy(),
+    ]
     rows: list[list[str]] = []
 
     with PolicyProgress([policy.name for policy in policies]) as progress:

@@ -9,7 +9,7 @@ sys.path.insert(0, str(ROOT / "examples" / "logistics"))
 
 from sda_mc import HistoricalBootstrapSampler, Simulator, SimulatorConfig  # noqa: E402
 from data import initial_state, synthetic_history  # noqa: E402
-from policies import GreedyPolicy  # noqa: E402
+from policies import GreedyPolicy, LookaheadRolloutPolicy  # noqa: E402
 from transition import logistics_transition, reward_completed_minus_late  # noqa: E402
 
 
@@ -69,6 +69,31 @@ def test_parallel_simulator_matches_sequential_for_deterministic_policy():
     assert [trajectory.final_state for trajectory in parallel] == [
         trajectory.final_state for trajectory in sequential
     ]
+
+
+def test_lookahead_policy_receives_model_and_plans():
+    sampler = HistoricalBootstrapSampler(synthetic_history(10), block_size=2, seed=1)
+    stepping_sampler_id = id(sampler)
+    policy = LookaheadRolloutPolicy(scenarios=2, horizon=3)
+    simulator = Simulator(
+        transition=logistics_transition,
+        sampler=sampler,
+        reward_fn=reward_completed_minus_late,
+    )
+
+    trajectories = simulator.run(
+        initial_state=_initial_state_for_replication,
+        policy=policy,
+        config=SimulatorConfig(horizon=5, replications=2, parallel=False),
+    )
+
+    assert len(trajectories) == 2
+    assert all(len(t.steps) == 5 for t in trajectories)
+    # The simulator injected a lookahead model whose sampler is an independent
+    # copy, so planning rollouts cannot consume the stepping sampler's stream.
+    assert policy.model is not None
+    assert policy.model.transition is logistics_transition
+    assert id(policy.model.sampler) != stepping_sampler_id
 
 
 def test_simulator_rejects_non_positive_max_workers():
