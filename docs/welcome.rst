@@ -15,6 +15,8 @@ Getting Started
 
 New to the simulator? Start with the :doc:`installation` guide, then work through the :doc:`tutorial`.
 
+Want to see a complete working example? Check out the :doc:`examples` section, which includes a detailed walkthrough of the **Logistics Dispatch** problem.
+
 Want to understand the theory? Check out the :doc:`background` section.
 
 For detailed API documentation, see :doc:`api`.

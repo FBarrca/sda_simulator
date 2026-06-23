@@ -10,6 +10,7 @@ Monte Carlo simulator for sequential decision problems using pluggable policies,
    welcome
    installation
    tutorial
+   examples
    getting-started
    background
    api
