@@ -38,7 +38,15 @@ class SupplyArrival:
 
 @dataclass
 class OpenPurchaseOrder:
-    """Outstanding replenishment order currently in the supply pipeline."""
+    """Outstanding replenishment order currently in the supply pipeline.
+
+    `expected_receipt_date` is the *planned* arrival the policy observes and
+    reasons about (order date plus the nominal lead time). `realized_receipt_date`
+    is the *actual* day the goods land — it differs from the plan by the supply
+    lead-time shock sampled as exogenous information, and is the date the
+    transition uses to credit a simulated receipt. For historical purchase orders
+    the two coincide; only controllable `SIM-PO-…` orders carry timing risk.
+    """
 
     order_id: str
     material_id: str
@@ -47,7 +55,14 @@ class OpenPurchaseOrder:
     quantity_open: float
     order_date: str
     expected_receipt_date: str
+    realized_receipt_date: str | None = None
     expedited: bool = False
+
+    def __post_init__(self) -> None:
+        """Default the realized receipt to the plan when no shock is supplied."""
+
+        if self.realized_receipt_date is None:
+            self.realized_receipt_date = self.expected_receipt_date
 
 
 @dataclass
@@ -129,13 +144,23 @@ class Decision:
 class ExogenousInfo:
     """Information revealed after the policy decision.
 
-    This contains the uncertainty for the next day: demand arrivals and realized
-    supply timing/receipts.
+    This contains the uncertainty for the next day: demand arrivals, realized
+    supply timing/receipts, and the supply lead-time shocks that perturb the
+    arrival of orders the policy controls.
+
+    - `lead_time_delay_days` (>=0): days added to the planned receipt date of any
+      `SIM-PO-…` reorder placed this epoch, so the policy's own replenishment is
+      not guaranteed to arrive on its nominal schedule.
+    - `expedite_delay_days` (>=0): residual days an expedite cannot buy back, so
+      expediting pulls a receipt in but does not deterministically land it
+      tomorrow.
     """
 
     date: str
     demand_arrivals: tuple[DemandArrival, ...] = ()
     supply_arrivals: tuple[SupplyArrival, ...] = ()
+    lead_time_delay_days: int = 0
+    expedite_delay_days: int = 0
 
 
 @dataclass(frozen=True)

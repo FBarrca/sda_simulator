@@ -24,10 +24,12 @@ from extract_policy_inputs import InventorySimulationData, load_inventory_simula
 from policy import (  # noqa: E402
     AggressiveReorderPolicy,
     AllocationOnlyPolicy,
+    DemandScaledReorderExpeditePolicy,
     MilpReorderPolicy,
     NoOpPolicy,
     ReorderAllocatePolicy,
     ReorderExpediteAllocatePolicy,
+    compute_demand_scaled_targets,
 )
 from sampler import InventoryHistoricalSampler  # noqa: E402
 from transition import inventory_transition, reward_stockout_overstock_service  # noqa: E402
@@ -87,12 +89,16 @@ def main() -> None:
     load_env_file(ROOT / ".env")
     data = load_inventory_simulation_data()
     config = SimulatorConfig(horizon=60, replications=20, parallel=False)
+    reorder_points, order_up_to_targets = compute_demand_scaled_targets(
+        data.history, lead_time_days=7
+    )
     policies = [
         NoOpPolicy(),
         AllocationOnlyPolicy(),
         ReorderAllocatePolicy(),
         ReorderExpediteAllocatePolicy(),
         AggressiveReorderPolicy(),
+        DemandScaledReorderExpeditePolicy(reorder_points, order_up_to_targets),
         MilpReorderPolicy(),
     ]
     rows: list[list[str]] = []

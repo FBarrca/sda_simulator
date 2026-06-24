@@ -131,24 +131,38 @@ What the policy does **not** control, revealed *after* its decision each day as
   can favor the orders that matter most.
 - **Supply arrivals** — realized goods receipts that raise inventory and burn
   down the open pipeline.
+- **Supply lead-time shocks** — the timing risk on the orders the policy
+  *itself* places. A reorder is planned to arrive after a nominal lead time, but
+  the realized receipt slips by a sampled `lead_time_delay_days` (mean ≈ 1.4 days
+  on a 7-day lead, occasionally a full week late); an expedite pulls a receipt in
+  but cannot beat the requested date by more than the supplier can recover
+  (`expedite_delay_days`), so expediting usually — but not always — lands the
+  goods on time. The policy observes only the *planned* receipt date; the
+  realized one is revealed when the goods actually arrive.
 
 `InventoryHistoricalSampler` drives this. On `reset(replication)` it picks a
 reproducible random start day in the 1-year history and then returns
 **consecutive days with wraparound** — preserving the observed day-to-day
-demand/supply timing within each sample path rather than shuffling it. The
-simulation clock advances **monotonically** (one day per step, anchored at the
-initial date) independent of the wrapped historical dates, so date-gated
+demand/supply timing within each sample path rather than shuffling it — and
+draws the two lead-time shocks above with a fixed number of RNG calls per step,
+so every policy faces the *identical* demand and supply-timing stream for a given
+seed. The simulation clock advances **monotonically** (one day per step, anchored
+at the initial date) independent of the wrapped historical dates, so date-gated
 replenishment receipts stay consistent across a year boundary.
 
 ### Transition (`transition.py`)
 
 `inventory_transition(state, decision, exogenous)` advances one day, in order:
 
-1. **Apply reorders** — add/grow `SIM-PO-…` orders in the pipeline.
+1. **Apply reorders** — add/grow `SIM-PO-…` orders in the pipeline, stamping
+   each with a *realized* receipt date = planned date + the epoch's
+   `lead_time_delay_days`.
 2. **Apply expedites** — pull receipt dates earlier (for the controllable
-   `SIM-PO-…` orders, whose timing the policy can actually move) at a cost.
-3. **Receive supply** — credit any `SIM-PO-…` now due, then apply realized
-   exogenous goods receipts (decrementing the matching open PO).
+   `SIM-PO-…` orders, whose timing the policy can actually move) at a cost,
+   capped by the epoch's `expedite_delay_days` so the pull-in is not guaranteed.
+3. **Receive supply** — credit any `SIM-PO-…` whose *realized* receipt date has
+   arrived (not merely its planned date), then apply realized exogenous goods
+   receipts (decrementing the matching open PO).
 4. **Apply allocations** — move on-hand stock to backlog orders, recording
    completed quantity and clearing fully-served orders.
 5. **Inject new demand** — append the day's demand arrivals to backlog.
@@ -188,17 +202,18 @@ and expediting budget where they buy the most service.
 | `ReorderAllocatePolicy` | Allocate backlog **and** reorder any item whose inventory position (on-hand + pipeline) falls below a reorder point, up to an order-up-to target. |
 | `ReorderExpediteAllocatePolicy` | The full baseline: reorder low items, **expedite** open POs for items currently in backlog, and allocate. |
 | `AggressiveReorderPolicy` | Same full action set with higher targets (reorder point 130, order-up-to 220, shorter lead time) — carries more inventory to avoid stockouts. |
+| `DemandScaledReorderExpeditePolicy` | The **fair** (s, S) baseline: same levers as `ReorderExpediteAllocate`, but each `(material, plant)` gets its *own* reorder point and order-up-to, sized from demand history (lead-time demand + safety stock). Safety stock uses the service level the reward *implies* — the critical ratio `3.0/(3.0+0.02) ≈ 0.993`, z ≈ 2.48 — so it is calibrated to the same objective the MILP optimizes. Items with no demand history are never stocked. |
 | `MilpReorderPolicy` | Same allocation + expedite, but reorders are chosen by a budget-constrained MILP instead of fixed thresholds. A 0/1 knapsack (`scipy.optimize.milp`) spends a per-epoch **reorder budget** across competing items to protect the most priority- and urgency-weighted *uncovered* backlog; falls back to `ReorderExpediteAllocate` if scipy is unavailable. |
 
-The shared helpers implement a classic **(s, S) reorder rule** on inventory
-position, priority-ordered allocation, and backlog-driven expediting. The MILP
-policy instead reorders *reactively* — only to cover known backlog that on-hand
-stock and the open pipeline cannot, allocating a scarce reorder budget where it
-buys the most weighted service. Because items compete for that shared budget,
-the choice is a genuine optimization rather than an independent per-item rule;
-in practice it reaches the best net reward while carrying far less inventory
-(less overstock) than the threshold policies, at the cost of a little more
-backlog risk under lumpy demand.
+The first three reordering policies share a **global** (s, S) rule — one
+`(reorder_point, order_up_to)` pair applied to every item — which is deliberately
+naive: it over-stocks slow movers and is the foil for everything below.
+`DemandScaledReorderExpedite` keeps the (s, S) structure but sizes the thresholds
+*per item* from demand, the way a competent planner would. The MILP instead
+reorders *reactively* — only to cover known backlog that on-hand stock and the
+open pipeline cannot, allocating a scarce reorder budget where it buys the most
+weighted service. The interesting comparison is the last two: a well-tuned (s, S)
+versus a budget optimizer, both of which right-size supply rather than blanket it.
 
 ## How it is evaluated (`run.py`)
 
@@ -230,10 +245,11 @@ policy                                 reward_mean                reward_ci95  r
 ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 no_action                              -1009335.45  (-1098417.27, -920253.64)    -1340250.73       5081.85         6243.50        17101.41
 allocation_only                         -412720.92   (-451140.76, -374301.08)     -576503.68       1952.05         2458.39        13971.61
-reorder_allocate                         -82913.65     (-85659.75, -80167.55)      -96001.58        112.05          398.00        50954.85
-reorder_expedite_allocate                -78480.84     (-80070.96, -76890.72)      -84647.82        112.05          398.00        50951.90
-aggressive_reorder_expedite_allocate    -110278.72  (-111774.44, -108783.01)     -116143.69        112.05          398.00        77707.25
-milp_reorder_budget                      -62171.26     (-65372.10, -58970.42)      -74437.87        174.96          555.32        14161.22
+reorder_allocate                         -84085.04     (-87525.34, -80644.74)     -100783.18        112.05          398.00        50898.80
+reorder_expedite_allocate                -79026.23     (-81062.69, -76989.77)      -87756.92        112.05          398.00        50899.00
+aggressive_reorder_expedite_allocate    -110139.51  (-112207.30, -108071.72)     -118514.49        112.05          398.00        77652.65
+demand_scaled_reorder_expedite_allocate  -77670.51     (-81397.65, -73943.37)      -91291.80        192.11          528.65        16826.28
+milp_reorder_budget                      -69992.29     (-73900.06, -66084.52)      -84699.36        179.36          555.32        14157.77
 ```
 
 (Every reward is negative because each replication starts from a large standing
@@ -267,48 +283,61 @@ cost each policy claws back, is what matters, not the sign.)
   demand is, ``allocation_only`` clears most backlog just by spending what is on
   hand — backlog 5,082 → 1,952, reward −1,009k → −413k (well over half the
   recovery) without ordering a thing.
-- **Reordering clears the backlog — but fixed targets overstock.** The (s, S)
-  policies drive backlog down to ~112, yet because supply already covers ~70% of
-  demand, their fixed order-up-to targets pile inventory to **~51k**. Reward lands
-  at −83k/−78k: the backlog is gone, but overstock holding cost is now the
-  dominant drag.
-- **Expedite still earns its cost.** ``reorder_expedite_allocate`` edges out
-  ``reorder_allocate`` (−78k vs −83k) by pulling its own SIM-PO receipts in; the
-  fee is charged, but earlier availability pays for itself.
-- **Hoarding is now clearly punished.** ``aggressive_reorder`` reaches the same
-  backlog (112) but carries **77k** of stock — its overstock penalty drops it to
-  −110k, *worse than the standard policy and far below the MILP*. More inventory is
-  not more money.
-- **The budget MILP wins decisively.** ``milp_reorder_budget`` posts the best
-  reward (−62k) and, unlike on the old data, its CI (−65.4k, −59.0k) **does not
-  overlap** the threshold policies' — a statistically real win — while holding
-  just **14k** of inventory (about a third of theirs). Reordering only the
-  priority-weighted backlog its budget can protect clears demand without the
-  overstock.
-- **It is also the most stable, not just lucky-on-average.** Read down the
-  `reward_cvar95` column: the MILP's worst-5% reward (**−74k**) is the best tail of
-  any policy and sits close to its **−62k** mean, so a bad month is only modestly
-  worse than a typical one. The baselines, by contrast, have tails that blow out
-  (``no_action`` −1,009k mean → **−1,340k** worst-5%); their bad scenarios are
-  *much* worse than their averages. Low mean **and** a tight tail is what makes a
-  policy trustworthy to deploy.
+- **A blanket reorder target clears backlog but over-stocks — and that is a
+  *sizing* artifact, not a flaw of (s, S).** The global-threshold policies drive
+  backlog down to ~112, yet because one `order_up_to=140` is applied to every
+  item regardless of its demand, inventory piles to **~51k**. Reward lands at
+  −84k/−79k: the backlog is gone, but overstock holding cost is now the dominant
+  drag. Expedite still earns its cost (``reorder_expedite_allocate`` −79k edges
+  ``reorder_allocate`` −84k), and ``aggressive_reorder`` shows hoarding is
+  punished — same 112 backlog, but **77k** of stock drags it to −110k.
+- **Sizing the (s, S) to demand removes almost all of that overstock.**
+  ``demand_scaled_reorder_expedite_allocate`` keeps the exact same levers but
+  gives each item its own demand-based threshold (safety stock set to the reward's
+  implied ~99.3% service level). Inventory collapses from ~51k to **~17k** — a
+  third of the blanket policy, right next to the MILP — proving the overstock was
+  never inherent to (s, S), just to applying one target to 500 different items.
+  Its reward, **−78k**, is *better* than the blanket policies despite holding far
+  less, because under stochastic lead times the lean book still covers demand
+  (backlog 192) without paying to warehouse stock nobody orders.
+- **The budget MILP still wins — but now only narrowly, over a fair opponent.**
+  ``milp_reorder_budget`` posts **−70k** holding just **14k** of inventory. Its CI
+  (−73.9k, −66.1k) sits just above the tuned (s, S)'s (−81.4k, −73.9k) — the
+  intervals barely touch, so the win is real but *slim*, a far cry from the
+  blowout it looked like against the blanket baselines. Both policies right-size
+  supply; the MILP's remaining edge comes from reordering *reactively* to the
+  priority-weighted backlog it can actually protect, rather than to a
+  distribution-based target, shaving the last bit of inventory and backlog.
+- **Leanness costs tail stability — for both lean policies.** Read down the
+  `reward_cvar95` column: running lean under random lead times means a slipped
+  receipt lands as backlog with no buffer to absorb it, so both right-sized
+  policies have a wider mean-to-tail gap than their lean means suggest — MILP
+  −70k mean / **−85k** worst-5%, tuned (s, S) −78k / **−91k**. The MILP still owns
+  the best absolute tail of any policy, and the overstocked baselines are far
+  worse in absolute terms (``no_action`` −1,009k → **−1,340k**), but the example
+  now shows the real tradeoff honestly: low inventory buys the best worst-case,
+  yet not a free one.
 
 **The bottom line for the business:**
 
 - **Use what you have first.** With stock positioned where demand is, disciplined
   allocation recovers more than half the value before a single new order — the
   cheapest lever, and the one most easily overlooked.
-- **Don't let fixed reorder targets run the warehouse.** When suppliers already
-  cover most demand, a blanket order-up-to rule buys inventory you don't need; the
-  worst offender (``aggressive``) carried 77k of stock to make *less* money than a
-  lighter policy.
-- **Budget reordering to the demand most at risk.** The MILP clears backlog with a
-  third of the inventory *and* a statistically clear reward lead — the freed
-  working capital is the prize, and here the reward gap confirms it outright.
-- **Compare distributions, not single runs.** Confidence intervals separate a real
-  winner (the MILP) from near-ties among the threshold policies, and the CVaR95
-  tail tells you which policy survives a bad month — a single run could not
-  reliably tell an overstock-heavy −83k from a −110k, let alone how stable either
+- **Right-size before you optimize.** Most of the apparent "optimization win" is
+  just sizing: a blanket order-up-to rule carried ~51–77k of stock, but giving
+  each item a demand-based threshold cut that to ~17k at *better* reward. The
+  cheapest, biggest gain is calibrating reorder levels to demand — not buying a
+  solver.
+- **The solver's edge is real but marginal once the baseline is fair.** Against a
+  reward-calibrated (s, S), the budget MILP wins by only ~8k reward (−70k vs −78k)
+  and ~3k inventory, with confidence intervals that barely separate. Reactive
+  budget allocation squeezes out the last bit, but a competent (s, S) is most of
+  the way there — worth knowing before paying for the heavier machinery.
+- **Compare distributions, not single runs.** Confidence intervals show the MILP's
+  lead over the tuned (s, S) is slim (barely non-overlapping) while its lead over
+  the blanket baselines is decisive, and the CVaR95 tail tells you which policy
+  survives a bad month — a single run could not reliably tell an overstock-heavy
+  −84k from a −110k, let alone how stable either
   is.
 
 ## The objective in one line
@@ -317,36 +346,46 @@ cost each policy claws back, is what matters, not the sign.)
 > possible across uncertain demand and supply timing, while keeping both
 > backlog and excess inventory low.
 
-## How the policies reshape supply and demand
+## What each policy does, and what it gets
 
 Demand is exogenous — every policy faces the identical order stream. What a
-policy *controls* is the supply it injects (reorders) and how it spends on-hand
-stock, so the sharpest way to tell the policies apart is to watch the state they
-produce over the horizon:
+policy *controls* is the three levers it pulls each day, and the state and cost
+those levers produce. The dashboard lays the whole causal chain out as six
+panels — **what it does** (left column) → **what state results** (right top/mid)
+→ **the cost outcome** (right bottom):
 
 ```bash
 python3 visualize_policies.py
 ```
 
-![On-hand inventory and open backlog per policy over the horizon](inventory_policy_trajectories.png)
+![What each policy does (levers) and what it gets (state and cost)](inventory_policy_trajectories.png)
 
-Each line is the mean of 20 runs, and the two panels are the two halves of the
-objective:
+Each line is the mean of 20 runs; the two right-sized policies are drawn thick.
+Panels whose values span orders of magnitude use a **log** y-axis (marked) so the
+lean policies are not crushed against the floor of a linear scale.
 
-- **On-hand inventory (top) — the supply side the policy builds.**
-  ``aggressive`` (red) blows past **78k** units within a week and parks there;
-  the standard threshold policies (``reorder_allocate``,
-  ``reorder_expedite_allocate``) jump to **~51k** by day 7. All three keep
-  ordering toward a fixed target that the historical supply has already nearly
-  met, so stock simply piles up as overstock. ``no_action``, ``allocation_only``,
-  and ``milp_reorder_budget`` stay lean (**~14–17k**).
-- **Open backlog (bottom) — the demand left unmet.** ``no_action`` (grey) climbs
-  steadily to **~5k** as orders arrive and nothing is replenished; ``allocation_only``
-  (blue) bleeds up to **~2k** once its opening stock is spent. Every reordering
-  policy holds backlog near zero throughout.
+- **Units reordered / expedites / allocated (left) — the levers.** The supply a
+  policy *injects* is the sharpest tell: ``aggressive`` (red) and the
+  global-threshold policies (green/cyan) dump **~50–78k** units into the pipeline
+  in the first week and flatline, while the right-sized
+  ``demand_scaled`` (orange) and ``milp`` (purple) trickle in only **~2–5k** total,
+  reactively. ``no_action``/``allocation_only`` order nothing. The expedite panel
+  shows the tuned (s, S) leans on expediting hardest (it runs lean, so it pulls
+  receipts in often); allocation is near-identical for every reordering policy —
+  they all serve essentially the full ~5k of demand.
+- **On-hand inventory / open backlog (right, top & middle) — the state.** On the
+  log inventory axis the lean band is finally legible: ``demand_scaled`` (~17k)
+  and ``milp`` (~14k) sit clearly *below* the ~51k/78k overstock band. Backlog
+  separates the do-little policies (``no_action`` → ~5k, ``allocation_only`` →
+  ~2k) from every reordering policy, which all hold backlog near ~100–250.
+- **Cost = −reward (right, bottom) — the outcome.** The cumulative cost log axis
+  ranks everything at a glance: ``no_action`` ~1M, ``allocation_only`` ~413k, then
+  the tight cluster where ``milp`` (70k) edges ``demand_scaled`` (78k) below the
+  blanket-target policies (79–110k).
 
-Read together, the figure is the whole tradeoff in one picture: the threshold
-policies kill backlog only by drowning in inventory, while ``milp_reorder_budget``
-is the one line that stays **low on both panels** — injecting just enough supply,
-just in time, to keep demand covered without hoarding. That lean-but-covered
-trajectory is exactly why it posts the best reward.
+Read together, the dashboard is the whole argument in one picture: the
+global-threshold policies buy low backlog by *injecting and holding* far more
+supply than they need, while the tuned (s, S) and the MILP reach the same service
+with a third of the orders and inventory — and the MILP's lines sit just a hair
+below the tuned (s, S) everywhere, exactly the slim, honest margin the reward
+table reports.

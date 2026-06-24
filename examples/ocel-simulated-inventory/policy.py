@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, timedelta
+from math import sqrt
+from typing import Sequence
 
 from domain import (
     AllocateStockAction,
@@ -123,6 +126,50 @@ class AggressiveReorderPolicy(ReorderExpediteAllocatePolicy):
         """Create a policy that carries more inventory to avoid stockouts."""
 
         super().__init__(reorder_point=130.0, order_up_to=220.0, lead_time_days=5)
+
+
+class DemandScaledReorderExpeditePolicy:
+    """Full-action (s, S) policy with **per-item** thresholds sized to demand.
+
+    Same levers as `ReorderExpediteAllocatePolicy`, but instead of one global
+    `(reorder_point, order_up_to)` applied to every item, each `(material, plant)`
+    gets its own pair derived offline from demand history (see
+    `compute_demand_scaled_targets`): reorder point = lead-time demand + safety
+    stock, order-up-to = (lead time + review) demand + safety stock. Items with no
+    historical demand get no target and are never stocked. This is the fair
+    threshold baseline — a competent planner's (s, S) — for comparison against the
+    budget MILP, rather than the deliberately blunt global-target policies above.
+    """
+
+    name = "demand_scaled_reorder_expedite_allocate"
+
+    def __init__(
+        self,
+        reorder_points: dict[tuple[str, str], float],
+        order_up_to_targets: dict[tuple[str, str], float],
+        lead_time_days: int = 7,
+    ) -> None:
+        """Create the policy from precomputed per-item (s, S) targets."""
+
+        self.reorder_points = reorder_points
+        self.order_up_to_targets = order_up_to_targets
+        self.lead_time_days = lead_time_days
+
+    def decide(self, state: State) -> Decision:
+        """Reorder to per-item targets, expedite backlogged items, and allocate."""
+
+        return Decision(
+            reorders=tuple(
+                reorder_to_targets(
+                    state,
+                    reorder_points=self.reorder_points,
+                    order_up_to_targets=self.order_up_to_targets,
+                    lead_time_days=self.lead_time_days,
+                )
+            ),
+            expedites=tuple(expedite_for_backlog(state)),
+            allocations=tuple(allocate_backlog_by_priority(state)),
+        )
 
 
 class MilpReorderPolicy:
@@ -320,6 +367,112 @@ def reorder_low_items(
             )
         )
     return actions
+
+
+def reorder_to_targets(
+    state: State,
+    *,
+    reorder_points: dict[tuple[str, str], float],
+    order_up_to_targets: dict[tuple[str, str], float],
+    lead_time_days: int,
+) -> list[ReorderAction]:
+    """Reorder each item below its **per-item** reorder point up to its target.
+
+    Items without an entry in `reorder_points` / `order_up_to_targets` (no demand
+    history) are skipped, so the policy never stocks materials nobody orders.
+    """
+
+    item_keys = set(state.inventory) | {
+        (order.material_id, order.plant_id) for order in state.backlog.values()
+    }
+    pipeline_by_item: dict[tuple[str, str], float] = {}
+    for order in state.pipeline.values():
+        item_key = (order.material_id, order.plant_id)
+        pipeline_by_item[item_key] = pipeline_by_item.get(item_key, 0.0) + order.quantity_open
+
+    actions = []
+    for material_id, plant_id in sorted(item_keys):
+        item_key = (material_id, plant_id)
+        reorder_point = reorder_points.get(item_key, 0.0)
+        order_up_to = order_up_to_targets.get(item_key, 0.0)
+        if order_up_to <= 0:
+            continue
+        available = state.inventory.get(item_key, 0.0)
+        pipeline = pipeline_by_item.get(item_key, 0.0)
+        inventory_position = available + pipeline
+        if inventory_position >= reorder_point:
+            continue
+        quantity = order_up_to - inventory_position
+        if quantity <= 0:
+            continue
+        actions.append(
+            ReorderAction(
+                order_id=f"SIM-PO-{state.time}-{material_id}-{plant_id}",
+                material_id=material_id,
+                plant_id=plant_id,
+                supplier_id="SIM-SUPPLIER",
+                quantity=quantity,
+                expected_receipt_date=add_days(state.date, lead_time_days),
+            )
+        )
+    return actions
+
+
+def compute_demand_scaled_targets(
+    history: Sequence[object],
+    *,
+    lead_time_days: int = 7,
+    review_days: int = 1,
+    service_z: float = 2.477,
+) -> tuple[dict[tuple[str, str], float], dict[tuple[str, str], float]]:
+    """Derive per-item (s, S) targets from the historical daily demand series.
+
+    For each `(material, plant)` with demand history, using daily-demand mean `mu`
+    and standard deviation `sigma` over the full history:
+
+        reorder point s = mu * L            + z * sigma * sqrt(L)
+        order-up-to  S = mu * (L + R)       + z * sigma * sqrt(L + R)
+
+    i.e. expected lead-time (and review-period) demand plus a `service_z`-sigma
+    safety stock. Items with no historical demand are omitted (never stocked).
+
+    The default `service_z = 2.477` is not a generic 95% rule of thumb but the
+    **critical-ratio service level implied by the reward**: with a backlog
+    penalty of 3.0 and an overstock holding cost of 0.02 per unit per step
+    (`reward_stockout_overstock_service`), the newsvendor critical ratio is
+    `3.0 / (3.0 + 0.02) ≈ 0.993`, whose normal quantile is ≈ 2.477. Sizing safety
+    stock to the same objective the MILP optimizes makes this a *fair* (s, S)
+    baseline — a competent planner who knows the cost structure — rather than one
+    handicapped by an arbitrary service target.
+    """
+
+    num_days = len(history)
+    if num_days == 0:
+        return {}, {}
+
+    daily_demand: dict[tuple[str, str], dict[int, float]] = defaultdict(lambda: defaultdict(float))
+    for day_index, record in enumerate(history):
+        for order in record.demand_arrivals:
+            item_key = (order.material_id, order.plant_id)
+            daily_demand[item_key][day_index] += order.quantity
+
+    reorder_points: dict[tuple[str, str], float] = {}
+    order_up_to_targets: dict[tuple[str, str], float] = {}
+    lead = lead_time_days
+    cover = lead_time_days + review_days
+    for item_key, by_day in daily_demand.items():
+        mean = sum(by_day.values()) / num_days
+        variance = sum(
+            (by_day.get(day_index, 0.0) - mean) ** 2 for day_index in range(num_days)
+        ) / num_days
+        safety = service_z * sqrt(variance)
+        reorder_point = mean * lead + safety * sqrt(lead)
+        order_up_to = mean * cover + safety * sqrt(cover)
+        if order_up_to <= 0:
+            continue
+        reorder_points[item_key] = reorder_point
+        order_up_to_targets[item_key] = order_up_to
+    return reorder_points, order_up_to_targets
 
 
 @dataclass(frozen=True)

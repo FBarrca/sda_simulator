@@ -39,8 +39,10 @@ def inventory_transition_with_info(
     # wraparound and would otherwise strand date-gated SIM-PO receipts.
     next_state.date = _next_day(state.date)
 
-    reordered_quantity = _apply_reorders(next_state, decision)
-    expedited_orders, expedite_cost = _apply_expedites(next_state, decision)
+    reordered_quantity = _apply_reorders(next_state, decision, exogenous.lead_time_delay_days)
+    expedited_orders, expedite_cost = _apply_expedites(
+        next_state, decision, exogenous.expedite_delay_days
+    )
     due_pipeline_quantity = _apply_due_simulated_pipeline_receipts(next_state, next_state.date)
     received_quantity = due_pipeline_quantity + _apply_supply_arrivals(next_state, exogenous)
     allocated_quantity, allocated_value = _apply_allocations(next_state, decision)
@@ -88,11 +90,15 @@ def reward_stockout_overstock_service(
     )
 
 
-def _apply_reorders(state: State, decision: Decision) -> float:
+def _apply_reorders(state: State, decision: Decision, lead_time_delay_days: int) -> float:
     total = 0.0
     for reorder in decision.reorders:
         if reorder.quantity <= 0:
             continue
+        # The policy plans on the nominal receipt date, but the goods actually
+        # land `lead_time_delay_days` later — exogenous supply-timing risk on the
+        # lever the policy controls.
+        realized_receipt_date = _add_days(reorder.expected_receipt_date, lead_time_delay_days)
         existing = state.pipeline.get(reorder.order_id)
         if existing is None:
             state.pipeline[reorder.order_id] = OpenPurchaseOrder(
@@ -103,15 +109,19 @@ def _apply_reorders(state: State, decision: Decision) -> float:
                 quantity_open=reorder.quantity,
                 order_date=state.date,
                 expected_receipt_date=reorder.expected_receipt_date,
+                realized_receipt_date=realized_receipt_date,
             )
         else:
             existing.quantity_open += reorder.quantity
             existing.expected_receipt_date = reorder.expected_receipt_date
+            existing.realized_receipt_date = realized_receipt_date
         total += reorder.quantity
     return total
 
 
-def _apply_expedites(state: State, decision: Decision) -> tuple[int, float]:
+def _apply_expedites(
+    state: State, decision: Decision, expedite_delay_days: int
+) -> tuple[int, float]:
     expedited = 0
     cost = 0.0
     for expedite in decision.expedites:
@@ -121,6 +131,16 @@ def _apply_expedites(state: State, decision: Decision) -> tuple[int, float]:
         order.expected_receipt_date = min(
             order.expected_receipt_date,
             expedite.new_expected_receipt_date,
+        )
+        # Expediting pulls the receipt toward the requested date, but cannot beat
+        # the realized date by more than the supplier can actually recover: the
+        # goods land `expedite_delay_days` after the target, and never later than
+        # they already would have.
+        expedited_receipt_date = _add_days(
+            expedite.new_expected_receipt_date, expedite_delay_days
+        )
+        order.realized_receipt_date = min(
+            order.realized_receipt_date, expedited_receipt_date
         )
         order.expedited = True
         expedited += 1
@@ -154,7 +174,7 @@ def _apply_due_simulated_pipeline_receipts(state: State, current_date: str) -> f
     for order in state.pipeline.values():
         if not order.order_id.startswith("SIM-PO-"):
             continue
-        if order.expected_receipt_date > current_date:
+        if (order.realized_receipt_date or order.expected_receipt_date) > current_date:
             continue
         item_key = (order.material_id, order.plant_id)
         state.inventory[item_key] = state.inventory.get(item_key, 0.0) + order.quantity_open
@@ -224,6 +244,12 @@ def _next_day(date_text: str) -> str:
     """Return the ISO date one day after `date_text` (the monotonic sim clock)."""
 
     return (date.fromisoformat(date_text) + timedelta(days=1)).isoformat()
+
+
+def _add_days(date_text: str, days: int) -> str:
+    """Return an ISO date string offset by `days` (non-negative supply delays)."""
+
+    return (date.fromisoformat(date_text) + timedelta(days=days)).isoformat()
 
 
 def _stockout_quantity(state: State) -> float:
