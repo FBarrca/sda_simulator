@@ -1,10 +1,29 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, timedelta
 from random import Random
 from typing import Sequence
 
 from domain import DemandArrival, ExogenousInfo, SupplyArrival
+
+
+# Map each sales order's type to a fulfillment priority (higher = more urgent)
+# and the service-level window (days from order date) used as its due date.
+_ORDER_TYPE_PRIORITY = {"Urgent": 3, "Normal": 2}
+_PRIORITY_SLA_DAYS = {3: 2, 2: 5, 1: 10}
+
+
+def _demand_priority(order: object) -> int:
+    """Derive a 1-3 priority from the order type (defaults to 1, e.g. Backorder)."""
+
+    return _ORDER_TYPE_PRIORITY.get(getattr(order, "order_type", None), 1)
+
+
+def _demand_due_date(order_date: str, priority: int) -> str:
+    """Due date = order date plus a priority-dependent SLA window."""
+
+    return (date.fromisoformat(order_date) + timedelta(days=_PRIORITY_SLA_DAYS[priority])).isoformat()
 
 
 @dataclass
@@ -52,8 +71,11 @@ def daily_record_to_exogenous(record: object) -> ExogenousInfo:
             plant_id=order.plant_id,
             quantity=order.quantity,
             customer_id=order.customer_id,
+            priority=priority,
+            due_date=_demand_due_date(order.order_date, priority),
         )
         for order in record.demand_arrivals
+        for priority in (_demand_priority(order),)
     )
     supply_arrivals = tuple(
         SupplyArrival(

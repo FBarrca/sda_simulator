@@ -1,13 +1,18 @@
 Examples
 ========
 
-The sda-mc-simulator includes complete, working examples that demonstrate how to set up and run sequential decision problems. This section walks through the **Logistics Dispatch** example in detail.
+The sda-mc-simulator includes complete, working examples that demonstrate how to set up and run sequential decision problems. This section walks through two of them in detail:
+
+- **Logistics Dispatch** — a hand-authored road-freight network where the daily decision assigns orders to warehouses and vehicles. Best for learning the core simulator anatomy (state, decision, exogenous info, transition, reward) and policy comparison with tail-risk metrics.
+- **OCEL Simulated Inventory** — a multi-plant inventory replenishment problem driven from an extracted, SAP-style database and object-centric event log (OCEL). Best for seeing a *data-derived* environment, a multi-lever decision (reorder / expedite / allocate), and a domain-specific MILP policy judged on stability.
+
+Both are framed as Sequential Decision Analytics problems and evaluated by Monte Carlo simulation over many sampled futures — comparing outcome *distributions*, not single runs.
 
 Logistics Dispatch Example
-==========================
+--------------------------
 
 Overview
---------
+~~~~~~~~
 
 The logistics example simulates a road-freight distribution network across Spain. It demonstrates:
 
@@ -20,7 +25,7 @@ The logistics example simulates a road-freight distribution network across Spain
 Find a daily dispatch policy that maximizes on-time, high-priority delivery service across uncertain demand and disruptions, while keeping late-delivery cost—especially in worst-case scenarios—low.
 
 The Business Context
-~~~~~~~~~~~~~~~~~~~~~
+^^^^^^^^^^^^^^^^^^^^^
 
 A distribution company operates three warehouses (Madrid, Barcelona, Valencia) serving 12 customer locations across Spain. Each day:
 
@@ -32,7 +37,7 @@ A distribution company operates three warehouses (Madrid, Barcelona, Valencia) s
 The decision to make each day is an **assignment**: which pending orders to dispatch, from which warehouse, on which vehicle. Under uncertainty about future demand, traffic, and vehicle availability, the goal is to maximize service value while minimizing lateness costs.
 
 The Network
------------
+~~~~~~~~~~~
 
 The network defines the physical backbone of the problem:
 
@@ -70,7 +75,7 @@ truck. (Regenerate it with ``python visualize_network.py``; see
 `Visualizing the Network`_.)
 
 The State Space
----------------
+~~~~~~~~~~~~~~~
 
 At any point in time, the simulator tracks:
 
@@ -103,7 +108,7 @@ A **Decision** is a set of **Assignments**, each binding one order to one (wareh
 Each order and vehicle can be assigned at most once per day.
 
 Exogenous Uncertainty
-~~~~~~~~~~~~~~~~~~~~~
+^^^^^^^^^^^^^^^^^^^^^
 
 The policy does not control these factors, revealed each day as ``ExogenousInfo``:
 
@@ -114,7 +119,7 @@ The policy does not control these factors, revealed each day as ``ExogenousInfo`
 Demand and disruptions are driven by stochastic events (holiday peaks, promotions, severe weather, port congestion), which lift demand and traffic and raise outage probability.
 
 Inspecting the Synthetic Demand
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The exogenous demand is produced by ``synthetic_history(days, seed)`` in
 ``data.py``. The ``seed`` argument makes the entire history reproducible, so the
@@ -156,7 +161,7 @@ Because both panels are fully determined by the seed, this figure is a quick way
 to sanity check a demand scenario before running the policies against it.
 
 Transition and Reward
-~~~~~~~~~~~~~~~~~~~~~
+^^^^^^^^^^^^^^^^^^^^^
 
 Each day, the simulation:
 
@@ -177,7 +182,7 @@ where:
 - **late_penalty** — growing cost for pending orders past their deadline, scaled by priority and days overdue
 
 Running the Example
--------------------
+~~~~~~~~~~~~~~~~~~~
 
 **Prerequisites:**
 
@@ -209,7 +214,7 @@ This will:
 - ``late_final`` — average number of orders still overdue at the end of the 30-day horizon
 
 Understanding the Code
-----------------------
+~~~~~~~~~~~~~~~~~~~~~~
 
 **Project Structure:**
 
@@ -272,7 +277,7 @@ Understanding the Code
         print(policy.name, report.aggregates["net_reward"])
 
 The Policies
-------------
+~~~~~~~~~~~~
 
 Five dispatch policies compete in the example:
 
@@ -427,7 +432,7 @@ the simulator. With no model injected, the policy degrades gracefully to plain
             return total / self.scenarios
 
 Interpreting Results
---------------------
+~~~~~~~~~~~~~~~~~~~~
 
 Running ``python run.py`` (30-day horizon, 100 replications, bootstrap seed 42)
 produces a table like this. These are **actual numbers** from the example, so
@@ -515,7 +520,7 @@ your run should reproduce them closely:
   *distributions* (not single runs) lets you verify before committing.
 
 Extending the Example
----------------------
+~~~~~~~~~~~~~~~~~~~~~
 
 **Modify the network:**
 
@@ -580,7 +585,7 @@ Define a metric function and add it to ``LOGISTICS_METRICS``:
     )
 
 Visualizing the Network
------------------------
+~~~~~~~~~~~~~~~~~~~~~~~
 
 Generate a map of the distribution network:
 
@@ -602,11 +607,216 @@ This creates ``logistics_network_map.png`` showing:
 
 The visualization helps you understand the geographic constraints that drive the dispatch decision-making.
 
+OCEL Simulated Inventory Example
+--------------------------------
+
+Overview
+~~~~~~~~
+
+The inventory example simulates a multi-plant materials inventory, reconstructed from a synthetic but **SAP-style ERP dataset**. It demonstrates:
+
+- Driving a simulator from **extracted database / event-log data** rather than a hand-authored world
+- A **multi-lever decision** (reorder, expedite, allocate) under a priority-weighted reward
+- Building a domain-specific **MILP** policy that competes with classic (s, S) heuristics
+- Reading policy **stability** from confidence intervals and CVaR tail risk
+
+**The Problem in One Sentence:**
+Find a daily reorder/expedite/allocate policy that fulfills as much demand as possible across uncertain demand and supply timing, while keeping both backlog and excess inventory low.
+
+The Business Context
+^^^^^^^^^^^^^^^^^^^^^
+
+We run the materials inventory of a multi-plant manufacturer: **5 plants**, **100 materials** (raw, semi-finished, finished), **50 customers**, **29 suppliers**. Each day:
+
+1. Customer **sales orders** arrive for a given material at a given plant
+2. Replenishment **purchase orders** placed earlier arrive after a lead time
+3. Demand not covered from on-hand stock becomes **backlog**; stock held but not needed is **overstock**
+
+The tension is the classic inventory one: stock is finite and refilling it is not instant, so you cannot drive both backlog and overstock to zero at once. The daily decision combines three levers — **reorder** (open/grow a purchase order), **expedite** (pull a receipt earlier), and **allocate** (assign on-hand stock to backlog).
+
+The Data
+~~~~~~~~
+
+Unlike the logistics example's hand-authored network, this world is **extracted** from a synthetic but SAP-faithful SQLite database and an **Object-Centric Event Log (OCEL)**. The familiar order tables are present — ``SalesOrderDocuments`` / ``SalesOrderItems`` (demand), ``PurchaseOrderDocuments`` / ``PurchaseOrderItems`` and ``PurchaseRequisitions`` (supply pipeline), ``Materials``, ``MaterialStocks`` (on-hand positions), ``GoodsReceiptsAndIssues`` (stock movements), and ``OrderSuggestions`` (reorder suggestions) — and are flattened into an OCEL where each event (*Create Purchase Order Item*, *Goods Receipt*, *Goods Issue*, …) is linked to the objects it touches (material, plant, purchase-order item, sales-order item, customer, supplier).
+
+``load_inventory_simulation_data()`` (in ``extract_policy_inputs.py``) reads the database and separates **state inputs** (opening inventory, the open purchase-order pipeline) from the **exogenous history** (per-day demand arrivals and supply receipts) that the sampler later resamples.
+
+Inspecting the Data
+^^^^^^^^^^^^^^^^^^^
+
+Before running anything, render the year of history as a two-panel figure:
+
+.. code-block:: bash
+
+    python visualize_data.py
+
+.. image:: ../examples/ocel-simulated-inventory/inventory_demand_supply.png
+   :alt: Cumulative demand vs supply, and demand by priority tier
+   :width: 100%
+
+Two facts drive the whole problem. **Supply tracks demand but does not quite cover it** (top panel): historical receipts meet about **70%** of the ~30,800 units ordered, leaving a ~9,200-unit gap that reordering must close — and the curves climb in lumpy steps, so timing is uncertain too. **Demand arrives in three priority tiers** (bottom panel): each order's type sets its priority (Urgent→3, Normal→2, else 1), and because the reward weights both service and backlog by priority, *which* demand a scarce unit of stock protects matters as much as how much is served.
+
+The State Space
+~~~~~~~~~~~~~~~
+
+.. code-block:: text
+
+    State:
+      inventory          available stock per (material, plant)
+      pipeline           open purchase orders (qty, expected receipt, expedited)
+      backlog            known-but-unfulfilled orders (qty, priority, due date)
+      completed_orders   cumulative fulfilled quantity per order
+      date, time         monotonic simulation clock
+
+A **Decision** bundles three optional action sets, all applied the same day:
+
+- **ReorderAction** — open/grow a purchase order for a (material, plant), received ``lead_time_days`` later (simulated reorders carry a ``SIM-PO-…`` id).
+- **ExpediteAction** — pull a controllable SIM-PO's receipt date earlier, at a cost.
+- **AllocateStockAction** — commit on-hand stock to a specific backlog order, bounded by ``min(requested, order_open, on_hand)``.
+
+Exogenous Uncertainty
+^^^^^^^^^^^^^^^^^^^^^
+
+Revealed *after* the decision each day as ``ExogenousInfo``:
+
+- **Demand arrivals** — new sales-order quantities, each carrying a priority and due date.
+- **Supply arrivals** — realized goods receipts that raise inventory and burn down the open pipeline.
+
+``InventoryHistoricalSampler`` picks a reproducible random start day in the 1-year history and replays consecutive days with wraparound, preserving the observed demand/supply timing. The simulation clock advances **monotonically**, decoupled from the wrapped historical dates, so date-gated receipts stay consistent across a year boundary.
+
+Transition and Reward
+^^^^^^^^^^^^^^^^^^^^^
+
+Each day, in order: apply reorders → apply expedites → receive supply → apply allocations → inject new demand → advance the clock. Because the policy is called *before* the day's demand is revealed, allocation can only serve backlog already known at the epoch.
+
+The **reward** for each step is:
+
+.. code-block:: text
+
+    reward = allocated_value − 3.0·backlog_value − 0.02·overstock − expedite_cost
+
+where service (``allocated_value``) and backlog are **priority-weighted**, overstock is a small holding cost on every on-hand unit, and expedite carries a fee — so every lever is a genuine tradeoff rather than free upside.
+
+Running the Example
+~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: bash
+
+    cd examples/ocel-simulated-inventory
+    SDA_MC_WANDB=0 python run.py
+
+This runs six policies over a **60-day horizon × 20 replications** and prints a metric table with the mean, 95% CI, and CVaR(95%) of reward and backlog. (``SDA_MC_WANDB=0`` disables optional Weights & Biases logging; the policies' MILP needs ``scipy``, a declared dependency.)
+
+The Policies
+~~~~~~~~~~~~
+
+Six policies form a ladder that isolates the value of each lever:
+
+**1. NoOpPolicy** *(name:* ``no_action`` *)* — do nothing; the baseline that shows how much the levers are worth.
+
+**2. AllocationOnlyPolicy** *(name:* ``allocation_only`` *)* — only allocate on-hand stock to backlog, ordered by priority, then due date and age. Isolates allocation value from replenishment.
+
+**3. ReorderAllocatePolicy** *(name:* ``reorder_allocate`` *)* — allocate, and reorder any item whose inventory position (on-hand + pipeline) is below a reorder point, up to an order-up-to target. A classic **(s, S)** rule.
+
+**4. ReorderExpediteAllocatePolicy** *(name:* ``reorder_expedite_allocate`` *)* — the full baseline: reorder, **expedite** SIM-POs for backlogged items, and allocate.
+
+**5. AggressiveReorderPolicy** *(name:* ``aggressive_reorder_expedite_allocate`` *)* — the same full action set with higher targets; carries more inventory to avoid stockouts.
+
+**6. MilpReorderPolicy** *(name:* ``milp_reorder_budget`` *)* — same allocation + expedite, but reorders are chosen by a **budget-constrained MILP** instead of fixed thresholds. A 0/1 knapsack (``scipy.optimize.milp``) spends a per-epoch **reorder budget** across competing items to protect the most priority- and urgency-weighted *uncovered* backlog:
+
+.. code-block:: python
+
+    class MilpReorderPolicy:
+        def decide(self, state):
+            reorders = self._milp_reorders(state)      # budget knapsack over uncovered backlog
+            if reorders is None:                        # scipy missing / infeasible
+                return self._fallback.decide(state)     # -> ReorderExpediteAllocate
+            return Decision(
+                reorders=tuple(reorders),
+                expedites=tuple(expedite_for_backlog(state)),
+                allocations=tuple(allocate_backlog_by_priority(state)),
+            )
+
+Unlike the (s, S) rules, which reorder each item independently to a fixed target, the MILP reorders **reactively** — only the backlog its budget can protect — so it adapts to the supply regime instead of blindly topping up.
+
+Interpreting Results
+~~~~~~~~~~~~~~~~~~~~
+
+Running ``SDA_MC_WANDB=0 python run.py`` (60-day horizon, 20 replications, seed 42) produces a table like this. These are **actual numbers** from the example, so your run should reproduce them closely:
+
+.. code-block:: text
+
+    policy                                 reward_mean                reward_ci95  reward_cvar95  backlog_mean  backlog_cvar95  inventory_mean
+    ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+    no_action                              -1009335.45  (-1098417.27, -920253.64)    -1340250.73       5081.85         6243.50        17101.41
+    allocation_only                         -412720.92   (-451140.76, -374301.08)     -576503.68       1952.05         2458.39        13971.61
+    reorder_allocate                         -82913.65     (-85659.75, -80167.55)      -96001.58        112.05          398.00        50954.85
+    reorder_expedite_allocate                -78480.84     (-80070.96, -76890.72)      -84647.82        112.05          398.00        50951.90
+    aggressive_reorder_expedite_allocate    -110278.72  (-111774.44, -108783.01)     -116143.69        112.05          398.00        77707.25
+    milp_reorder_budget                      -62171.26     (-65372.10, -58970.42)      -74437.87        174.96          555.32        14161.22
+
+(Every reward is negative because each replication starts from a large standing backlog inherited from the opening state; the **ranking** — how much of that cost each policy claws back — is what matters, not the sign.)
+
+**How to read the columns:**
+
+- **reward_mean** (↑) — priority-weighted service minus priority-weighted backlog, overstock holding cost, and expedite fees. The headline objective.
+- **reward_ci95** — 95% confidence interval on reward; intervals that **don't overlap** mark a real, repeatable difference.
+- **reward_cvar95** (↑, stability) — mean reward in the **worst 5%** of runs. The closer to ``reward_mean``, the more *dependable* the policy; a CVaR far below the mean means an occasional very bad month.
+- **backlog_mean / backlog_cvar95** (↓) — leftover unmet demand at the horizon, average and worst-5%.
+- **inventory_mean** (—) — on-hand stock left. *Not* "more is better": stock you carry but don't need is pure overstock cost. Read it alongside backlog as the two sides of the tradeoff.
+
+**What this tells you:**
+
+- **Doing nothing falls behind on both fronts.** ``no_action`` ends with 5,082 units of backlog *and* lets ~17k of arriving supply pile up unused (−1,009k). Every other policy is judged by how much of that it recovers.
+- **Allocation alone is a real lever.** Because opening stock sits where demand is, ``allocation_only`` clears most backlog just by spending what is on hand — reward −1,009k → −413k — without ordering a thing.
+- **Reordering clears the backlog, but fixed targets overstock.** The (s, S) policies drive backlog to ~112, yet because supply already covers ~70% of demand, their fixed order-up-to targets pile inventory to **~51k** — overstock holding cost becomes the dominant drag (−83k / −78k).
+- **Hoarding is punished.** ``aggressive`` reaches the same backlog but carries **77k** of stock, dropping it to −110k — *worse* than the standard policy. More inventory is not more money.
+- **The budget MILP wins decisively — and stably.** ``milp_reorder_budget`` posts the best reward (−62k) with a CI that **does not overlap** the threshold policies', while holding just **14k** of inventory (a third of theirs). Its worst-5% reward (CVaR −74k) is also the best tail of any policy and sits close to its mean — best on average **and** most dependable.
+
+**The bottom line for the business:**
+
+- **Use what you have first** — disciplined allocation recovers more than half the value before a single new order.
+- **Don't let fixed reorder targets run the warehouse** — when suppliers already cover most demand, a blanket order-up-to rule buys inventory you don't need.
+- **Budget reordering to the demand most at risk** — the MILP clears backlog with a third of the inventory *and* a statistically clear, stable reward lead.
+- **Compare distributions, not single runs** — the CI separates a real winner from near-ties, and the CVaR95 tail tells you which policy survives a bad month.
+
+How Policies Reshape Supply and Demand
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Demand is exogenous and identical for every policy; what differs is the *supply* a policy injects and the *backlog* it leaves. Plotting the per-step state makes the tradeoff visible:
+
+.. code-block:: bash
+
+    python visualize_policies.py
+
+.. image:: ../examples/ocel-simulated-inventory/inventory_policy_trajectories.png
+   :alt: On-hand inventory and open backlog per policy over the horizon
+   :width: 100%
+
+Each line is the mean of 20 runs. The threshold policies kill backlog (bottom) only by ballooning inventory (top — ``aggressive`` to ~78k), while ``milp_reorder_budget`` is the one line that stays **low on both panels**: just enough supply, just in time.
+
+Project Structure
+~~~~~~~~~~~~~~~~~
+
+.. code-block:: text
+
+    examples/ocel-simulated-inventory/
+    ├── PROBLEM.md                 # Detailed problem description
+    ├── run.py                     # Main simulation driver
+    ├── domain.py                  # State, Decision, ExogenousInfo, actions
+    ├── policy.py                  # The six policies
+    ├── sampler.py                 # Historical replay sampler (priorities, due dates)
+    ├── transition.py              # Transition model + priority-weighted reward
+    ├── extract_policy_inputs.py   # Load state + history from the SQLite database
+    ├── visualize_data.py          # Demand-vs-supply figure
+    ├── visualize_policies.py      # Per-policy state-trajectory figure
+    └── data/                      # SAP-style DB, OCEL exports, and the generator
+
 Next Steps
 ----------
 
-- Start with the example by running ``python run.py`` and examining the output
-- Read ``PROBLEM.md`` for a deeper dive into the problem formulation
+- Start with either example by running ``python run.py`` and examining the output
+- Read each example's ``PROBLEM.md`` for a deeper dive into the problem formulation
 - Modify a policy or add a custom policy to test your own ideas
 - Check the :doc:`api` documentation for simulator internals
 - Explore the :doc:`background` section to understand sequential decision theory

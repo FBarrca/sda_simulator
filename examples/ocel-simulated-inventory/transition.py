@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import replace
+from datetime import date, timedelta
 
 from domain import (
     BacklogOrder,
@@ -32,16 +33,23 @@ def inventory_transition_with_info(
     state: State, decision: Decision, exogenous: ExogenousInfo
 ) -> tuple[State, TransitionInfo]:
     next_state = deepcopy(state)
-    next_state.date = exogenous.date
+    # The simulation clock advances monotonically and is anchored at the initial
+    # state's date. It is intentionally decoupled from the sampled historical
+    # record's date (`exogenous.date`), which can jump ~1 year backward on
+    # wraparound and would otherwise strand date-gated SIM-PO receipts.
+    next_state.date = _next_day(state.date)
 
     reordered_quantity = _apply_reorders(next_state, decision)
     expedited_orders, expedite_cost = _apply_expedites(next_state, decision)
-    due_pipeline_quantity = _apply_due_simulated_pipeline_receipts(next_state, exogenous.date)
+    due_pipeline_quantity = _apply_due_simulated_pipeline_receipts(next_state, next_state.date)
     received_quantity = due_pipeline_quantity + _apply_supply_arrivals(next_state, exogenous)
-    allocated_quantity = _apply_allocations(next_state, decision)
+    allocated_quantity, allocated_value = _apply_allocations(next_state, decision)
     demand_arrival_quantity = _apply_demand_arrivals(next_state, exogenous)
 
     backlog_quantity = sum(order.quantity_open for order in next_state.backlog.values())
+    backlog_value = sum(
+        order.priority * order.quantity_open for order in next_state.backlog.values()
+    )
     stockout_quantity = _stockout_quantity(next_state)
     next_state.time += 1
 
@@ -51,8 +59,10 @@ def inventory_transition_with_info(
         received_quantity=received_quantity,
         demand_arrival_quantity=demand_arrival_quantity,
         allocated_quantity=allocated_quantity,
+        allocated_value=allocated_value,
         stockout_quantity=stockout_quantity,
         backlog_quantity=backlog_quantity,
+        backlog_value=backlog_value,
         expedite_cost=expedite_cost,
     )
 
@@ -63,12 +73,19 @@ def reward_stockout_overstock_service(
     """Contribution C(S_t, x_t, W_{t+1}): service minus backlog and overstock.
 
     Derived from the decision and realized exogenous information via the same
-    transition the simulator uses; the allocated and backlog quantities come
-    straight from its TransitionInfo instead of diffing two states.
+    transition the simulator uses; the allocated and backlog values come
+    straight from its TransitionInfo instead of diffing two states. Service and
+    backlog are priority-weighted, so serving (and failing to serve) high-priority
+    demand counts more. Expedite cost is charged so the expedite lever trades off.
     """
     next_state, info = inventory_transition_with_info(state, decision, exogenous)
     overstock_quantity = sum(max(0.0, quantity) for quantity in next_state.inventory.values())
-    return info.allocated_quantity - 3.0 * info.backlog_quantity - 0.02 * overstock_quantity
+    return (
+        info.allocated_value
+        - 3.0 * info.backlog_value
+        - 0.02 * overstock_quantity
+        - info.expedite_cost
+    )
 
 
 def _apply_reorders(state: State, decision: Decision) -> float:
@@ -149,8 +166,9 @@ def _apply_due_simulated_pipeline_receipts(state: State, current_date: str) -> f
     return total
 
 
-def _apply_allocations(state: State, decision: Decision) -> float:
+def _apply_allocations(state: State, decision: Decision) -> tuple[float, float]:
     total = 0.0
+    weighted_total = 0.0
     for allocation in decision.allocations:
         order = state.backlog.get(allocation.order_id)
         if order is None or allocation.quantity <= 0:
@@ -170,9 +188,10 @@ def _apply_allocations(state: State, decision: Decision) -> float:
             state.completed_orders.get(order.order_id, 0.0) + quantity
         )
         total += quantity
+        weighted_total += order.priority * quantity
         if order.quantity_open == 0:
             del state.backlog[order.order_id]
-    return total
+    return total, weighted_total
 
 
 def _apply_demand_arrivals(state: State, exogenous: ExogenousInfo) -> float:
@@ -199,6 +218,12 @@ def _apply_demand_arrivals(state: State, exogenous: ExogenousInfo) -> float:
             )
         total += arrival.quantity
     return total
+
+
+def _next_day(date_text: str) -> str:
+    """Return the ISO date one day after `date_text` (the monotonic sim clock)."""
+
+    return (date.fromisoformat(date_text) + timedelta(days=1)).isoformat()
 
 
 def _stockout_quantity(state: State) -> float:

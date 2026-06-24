@@ -147,6 +147,8 @@ class TransitionInfo:
     received_quantity: float = 0.0
     demand_arrival_quantity: float = 0.0
     allocated_quantity: float = 0.0
+    allocated_value: float = 0.0
     stockout_quantity: float = 0.0
     backlog_quantity: float = 0.0
+    backlog_value: float = 0.0
     expedite_cost: float = 0.0

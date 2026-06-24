@@ -24,6 +24,7 @@ from extract_policy_inputs import InventorySimulationData, load_inventory_simula
 from policy import (  # noqa: E402
     AggressiveReorderPolicy,
     AllocationOnlyPolicy,
+    MilpReorderPolicy,
     NoOpPolicy,
     ReorderAllocatePolicy,
     ReorderExpediteAllocatePolicy,
@@ -92,6 +93,7 @@ def main() -> None:
         ReorderAllocatePolicy(),
         ReorderExpediteAllocatePolicy(),
         AggressiveReorderPolicy(),
+        MilpReorderPolicy(),
     ]
     rows: list[list[str]] = []
 
@@ -126,12 +128,16 @@ def main() -> None:
             reward_summary = report.aggregates["reward"]
             backlog_summary = report.aggregates["final_backlog"]
             inventory_summary = report.aggregates["final_inventory"]
+            reward_risk = report.tail_risk["reward"]  # lower tail = worst-case reward
+            backlog_risk = report.tail_risk["final_backlog"]  # upper tail = worst-case backlog
             rows.append(
                 [
                     policy.name,
                     f"{reward_summary.mean:.2f}",
                     f"({reward_summary.ci95_low:.2f}, {reward_summary.ci95_high:.2f})",
+                    f"{reward_risk.cvar:.2f}",
                     f"{backlog_summary.mean:.2f}",
+                    f"{backlog_risk.cvar:.2f}",
                     f"{inventory_summary.mean:.2f}",
                 ]
             )
@@ -143,7 +149,9 @@ def main() -> None:
             TableColumn("policy", justify="left"),
             TableColumn("reward_mean"),
             TableColumn("reward_ci95"),
+            TableColumn("reward_cvar95"),
             TableColumn("backlog_mean"),
+            TableColumn("backlog_cvar95"),
             TableColumn("inventory_mean"),
         ],
         rows=rows,

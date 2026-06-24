@@ -326,30 +326,53 @@ def populate_tables(conn):
     conn.commit()
 
     # Generate Goods Receipts and Issues
+    #
+    # Supply (goods receipts) is sized against, and aimed at, the (material, plant)
+    # combinations that actually see demand. Historical receipts cover ~70% of
+    # annual demand: enough that supply realistically tracks demand, while leaving
+    # a deliberate gap for the policies' reorder decisions to close.
+    demand_pairs = [(item[2], item[3]) for item in sales_order_items]  # (material_number, plant)
+    total_demand_units = sum(item[4] for item in sales_order_items)
+    supply_target = 0.70 * total_demand_units
+
     goods_receipts_issues = []
-    for _ in range(200):
-        client = 'Client' + str(random.randint(1, 5))
-        purchase_document_number = random.randint(1, 150)  # Assuming num_purchase_orders = 150
-        line_item_in_purchase_document = random.randint(1, 5)
-        sequential_number_of_account_assignment = random.randint(1, 1000)
-        movement_type = random.choice(['Goods Receipt', 'Goods Issue'])
-        fiscal_year = datetime.now().year
-        document_number = random.randint(100000, 999999)
-        accounting_document_line = random.randint(1, 10)
-        material_number = random.randint(1, 100)  # Assuming num_materials = 100
-        plant = 'Plant' + str(random.randint(1, 5))
-        reference_document_number = random.randint(100000, 999999)
-        document_date_in_document = (datetime.now() - timedelta(days=random.randint(0, 365))).date()
-        posting_date_in_the_document = document_date_in_document
-        date_of_the_posting_in_the_document = document_date_in_document
-        time_of_the_posting_in_the_document = datetime.now().strftime('%H:%M:%S')  # Convert to string
-        quantity = random.randint(1, 100)
-        goods_receipts_issues.append((client, purchase_document_number, line_item_in_purchase_document,
-                                      sequential_number_of_account_assignment, movement_type, fiscal_year,
-                                      document_number, accounting_document_line, material_number, plant,
-                                      reference_document_number, document_date_in_document,
-                                      posting_date_in_the_document, date_of_the_posting_in_the_document,
-                                      time_of_the_posting_in_the_document, quantity))
+    document_number = 100000
+
+    def append_movement(movement_type, material_number, plant, quantity):
+        nonlocal document_number
+        document_number += 1
+        posting_date = (datetime.now() - timedelta(days=random.randint(0, 365))).date()
+        goods_receipts_issues.append((
+            'Client' + str(random.randint(1, 5)),
+            random.randint(1, num_purchase_orders),
+            random.randint(1, 5),
+            random.randint(1, 1000),
+            movement_type,
+            datetime.now().year,
+            document_number,
+            random.randint(1, 10),
+            material_number,
+            plant,
+            random.randint(100000, 999999),
+            posting_date,
+            posting_date,
+            posting_date,
+            datetime.now().strftime('%H:%M:%S'),
+            quantity,
+        ))
+
+    received = 0.0
+    while received < supply_target:
+        material_number, plant = random.choice(demand_pairs)
+        quantity = random.randint(20, 120)
+        received += quantity
+        append_movement('Goods Receipt', material_number, plant, quantity)
+
+    # Goods issues are kept for event-log realism only; the simulator drives
+    # demand from sales orders, so these movements do not affect supply.
+    for _ in range(150):
+        material_number, plant = random.choice(demand_pairs)
+        append_movement('Goods Issue', material_number, plant, random.randint(1, 100))
 
     cursor.executemany('''
         INSERT INTO GoodsReceiptsAndIssues (client, purchase_document_number, line_item_in_purchase_document,
@@ -395,18 +418,25 @@ def populate_tables(conn):
     conn.commit()
 
     # Generate Material Stocks
+    #
+    # Opening stock is held at the (material, plant) combinations that actually
+    # see demand, so the buffer is usable by allocation rather than stranded on a
+    # plant with no orders. Levels are moderate: a starting cushion worth a few
+    # orders, not a full year of cover.
     material_stocks = []
-    for material in materials:
-        material_number = material[0]
-        plant = 'Plant' + str(random.randint(1, 5))
+    seen_pairs = set()
+    for material_number, plant in demand_pairs:
+        if (material_number, plant) in seen_pairs:
+            continue
+        seen_pairs.add((material_number, plant))
         storage_location = 'Storage' + str(random.randint(1, 10))
         client = 'Client' + str(random.randint(1, 5))
-        stock_in_quality_inspection = round(random.uniform(0, 100), 2)
-        stock_in_transfer = round(random.uniform(0, 100), 2)
-        stock_in_posting = round(random.uniform(0, 100), 2)
-        stock_of_material_provided_to_vendor = round(random.uniform(0, 100), 2)
-        blocked_stock = round(random.uniform(0, 50), 2)
-        returns_stock = round(random.uniform(0, 50), 2)
+        stock_in_quality_inspection = round(random.uniform(0, 20), 2)
+        stock_in_transfer = round(random.uniform(0, 15), 2)
+        stock_in_posting = round(random.uniform(10, 50), 2)
+        stock_of_material_provided_to_vendor = round(random.uniform(0, 20), 2)
+        blocked_stock = round(random.uniform(0, 10), 2)
+        returns_stock = round(random.uniform(0, 10), 2)
         material_stocks.append((client, material_number, plant, storage_location,
                                 stock_in_quality_inspection, stock_in_transfer, stock_in_posting,
                                 stock_of_material_provided_to_vendor, blocked_stock, returns_stock))
@@ -503,6 +533,7 @@ def populate_tables(conn):
     conn.commit()
 
 def main():
+    random.seed(42)  # Reproducible synthetic dataset.
     conn = sqlite3.connect('inventory_management.db')
     create_tables(conn)
     populate_tables(conn)
